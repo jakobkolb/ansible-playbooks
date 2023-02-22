@@ -1,0 +1,17 @@
+- name: Setup nginx as reverse proxy for Jenkins
+  hosts: testing
+  roles:
+    - hispanico.nginx_revproxy
+  vars:
+    nginx_revproxy_sites:
+      jenkins:
+        domains:
+          - "{{ ansible_host }}"
+        upstreams:
+          - {backend_address: 127.0.0.1, backend_port: 8080}
+        ssl: true
+        letsencrypt: true
+        letsencrypt_email: "jakob.j.kolb@gmail.com"
+    nginx_revproxy_certbot_packages:
+      - python3-certbot-nginx
+      - certbot

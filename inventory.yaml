@@ -4,10 +4,10 @@ digitalocean:
       ansible_host: 206.81.21.29
       ansible_user: root
     test:
-      ansible_host: 143.198.101.175
+      ansible_host: testing.tinkerlabs.cloud
       ansible_user: root
 testing:
   hosts:
     test:
-      ansible_host: 143.198.101.175
+      ansible_host: testing.tinkerlabs.cloud
       ansible_user: root
