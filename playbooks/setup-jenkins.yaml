@@ -192,6 +192,8 @@
           name: jenkins
           state: restarted
 
+    - name: Install docker-compose
+
     - name: Print jenkins initial admin password
       ansible.builtin.command: cat /var/lib/jenkins/secrets/initialAdminPassword
       register: jenkins_password
