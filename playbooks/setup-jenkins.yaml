@@ -1,0 +1,203 @@
+- name: Setup Jenkins with rootless docker
+  hosts: testing
+  become: yes
+  become_user: root
+  tasks:
+    - name: Rebuild digitalocean droplet
+      digital_ocean_droplet:
+        state: present
+        command: rebuild
+        id: 2060812129
+        image: ubuntu-22-04-x64
+        wait_timeout: 600
+        wait: yes
+      register: rebuild_droplet
+      when: inventory_hostname == 'testing'
+
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        force_apt_get: yes
+        cache_valid_time: 3600
+
+    - name: Upgrade packages
+      apt:
+        upgrade: dist
+
+    - name: Install Java
+      ansible.builtin.package:
+        name: openjdk-11-jdk
+        state: present
+
+    - name: Get jenkins gpg key
+      ansible.builtin.apt_key:
+        url: https://pkg.jenkins.io/debian-stable/jenkins.io.key
+        state: present
+
+    - name: Add jenkins repository
+      ansible.builtin.apt_repository:
+        repo: deb https://pkg.jenkins.io/debian-stable binary/
+        state: present
+        update_cache: yes
+
+    - name: Install Jenkins
+      ansible.builtin.package:
+        name: jenkins
+        state: present
+
+    - name: Enable Jenkins service
+      ansible.builtin.systemd:
+          name: jenkins
+          enabled: yes
+          state: started
+
+    - name: Install docker requirements
+      ansible.builtin.package:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+
+    - name: Add Docker apt key.
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg
+        dest: /etc/apt/trusted.gpg.d/docker.asc
+        mode: '0644'
+        force: true
+      register: add_repository_key
+
+    - name: Add Docker repository.
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable
+        state: present
+        update_cache: true
+
+    - name: Install docker
+      ansible.builtin.package:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+
+    - name: Disable docker service and socket
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: no
+        state: stopped
+      loop:
+        - docker.service
+        - docker.socket
+
+    - name: Install rootless docker requirements
+      ansible.builtin.package:
+        name:
+          - uidmap
+          - dbus-user-session
+        state: latest
+
+    - name: set subuid for jenkins user
+      ansible.builtin.lineinfile:
+        path: /etc/subuid
+        line: "jenkins:100000:65536"
+        state: present
+        create: yes
+        mode: 0644
+        owner: root
+        group: root
+
+    - name: set subgid for jenkins user
+      ansible.builtin.lineinfile:
+          path: /etc/subgid
+          line: "jenkins:100000:65536"
+          state: present
+          create: yes
+          mode: 0644
+          owner: root
+          group: root
+
+    - name: Enable user lingering for jenkins user to get a systemd user session regardless of active login sessions
+      ansible.builtin.command: loginctl enable-linger jenkins
+
+    - name: Find uid of user
+      command: id -u jenkins
+      register: the_user_uid
+      check_mode: no # Run even in check mode, otherwise the playbook fails with --check.
+      changed_when: false
+
+    - name: Determine XDG_RUNTIME_DIR
+      set_fact:
+        xdg_runtime_dir: "/run/user/{{ the_user_uid.stdout }}"
+      changed_when: false
+
+    - name: Install rootless docker for jenkins user
+      become: yes
+      become_user: jenkins
+      ansible.builtin.command: dockerd-rootless-setuptool.sh install
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+
+    - name: systemctl --user enable docker
+      become: yes
+      become_user: jenkins
+      ansible.builtin.command: systemctl --user enable docker
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+
+    - name: verify rootless docker installation
+      become: yes
+      become_user: jenkins
+      ansible.builtin.command: docker run hello-world
+      environment:
+          XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+          DOCKER_HOST: unix://{{ xdg_runtime_dir }}/docker.sock
+
+    - name: set DOCKER_HOST in .bashrc
+      ansible.builtin.lineinfile:
+          path: /var/lib/jenkins/.bashrc
+          line: "export DOCKER_HOST=unix://{{ xdg_runtime_dir }}/docker.sock"
+          state: present
+          create: yes
+          mode: 0644
+          owner: jenkins
+          group: jenkins
+
+    - name: set XDG_RUNTIME_DIR in .bashrc
+      ansible.builtin.lineinfile:
+          path: /var/lib/jenkins/.bashrc
+          line: "export XDG_RUNTIME_DIR={{ xdg_runtime_dir }}"
+          state: present
+          create: yes
+          mode: 0644
+          owner: jenkins
+          group: jenkins
+
+    - name: set DOCKER_HOST in jenkins service environment variables
+      ansible.builtin.lineinfile:
+          path: /etc/systemd/system/jenkins.service
+          line: "Environment=DOCKER_HOST=unix://{{ xdg_runtime_dir }}/docker.sock"
+          state: present
+          create: yes
+          mode: 0644
+          owner: root
+          group: root
+
+    - name: set XDG_RUNTIME_DIR in jenkins service environment variables
+      ansible.builtin.lineinfile:
+          path: /etc/systemd/system/jenkins.service
+          line: "Environment=XDG_RUNTIME_DIR={{ xdg_runtime_dir }}"
+          state: present
+          create: yes
+          mode: 0644
+          owner: root
+          group: root
+
+    - name: restart jenkins service
+      ansible.builtin.systemd:
+          name: jenkins
+          state: restarted
